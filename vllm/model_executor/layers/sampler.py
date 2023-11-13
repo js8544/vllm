@@ -11,6 +11,10 @@ from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import (PromptLogprobs, SampleLogprobs, SamplerOutput,
                            SequenceData, SequenceGroupOutputs, SequenceOutputs)
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 _SAMPLING_EPS = 1e-5
 
 
@@ -67,20 +71,35 @@ class Sampler(nn.Module):
             # Use in-place division to avoid creating a new tensor.
             logits.div_(t.unsqueeze(dim=1))
 
+        # logger.info(f"logits shape: {logits.shape}")
+        # logger.info(f"logits: {logits}")
+
         # Apply top-p and top-k truncation.
         top_ps, top_ks = _get_top_p_top_k(input_metadata, self.vocab_size)
         assert len(top_ps) == len(top_ks) == logits.shape[0]
         do_top_p = any(p < 1.0 - _SAMPLING_EPS for p in top_ps)
         do_top_k = any(k != self.vocab_size for k in top_ks)
+
+        # logger.info(f"logits shape: {logits.shape}")
+        # logger.info(f"logits: {logits}")
+
         if do_top_p or do_top_k:
             logits = _apply_top_p_top_k(logits, top_ps, top_ks)
 
+        # logger.info(f"logits shape: {logits.shape}")
+        # logger.info(f"logits: {logits}")
         # We use float32 for probabilities and log probabilities.
         # Compute the probabilities.
         probs = torch.softmax(logits, dim=-1, dtype=torch.float)
+
+        # logger.info(f"probs shape: {probs.shape}")
+        # logger.info(f"probs: {probs}")
         # Compute the log probabilities.
         # Use log_softmax to ensure numerical stability.
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
+
+        # logger.info(f"logprobs shape: {logprobs.shape}")
+        # logger.info(f"logprobs: {logprobs}")
 
         # Sample the next tokens.
         sample_results = _sample(probs, logprobs, input_metadata)
@@ -278,12 +297,18 @@ def _apply_top_p_top_k(
     top_p_mask = (probs_sum - probs_sort) > p.unsqueeze(dim=1)
     logits_sort[top_p_mask] = -float("inf")
 
+    # logger.info(f"logits_sort shape: {logits_sort.shape}")
+    # logger.info(f"logits_sort: {logits_sort}")
+
     # Apply top-k.
     # Create a mask for the top-k elements.
     top_k_mask = torch.arange(logits_idx.shape[-1], device=logits_idx.device)
     top_k_mask = top_k_mask.expand(logits_idx.shape[0], -1)
     top_k_mask = top_k_mask >= k.unsqueeze(dim=1)
     logits_sort[top_k_mask] = -float("inf")
+
+    # logger.info(f"logits_sort shape: {logits_sort.shape}")
+    # logger.info(f"logits_sort: {logits_sort}")
 
     # Re-sort the probabilities.
     logits = torch.gather(logits_sort,

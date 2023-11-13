@@ -31,6 +31,7 @@ _MODEL_REGISTRY = {
     "OPTForCausalLM": OPTForCausalLM,
     "QWenLMHeadModel": QWenLMHeadModel,
     "RWForCausalLM": FalconForCausalLM,
+    "T5ForConditionalGeneration": T5ForConditionalGeneration,
 }
 
 # FIXME(woosuk): Remove this once all models support quantization.

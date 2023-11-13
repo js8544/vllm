@@ -40,6 +40,9 @@ from vllm.model_executor.parallel_utils.layers import (VocabParallelEmbedding,
                                                        ColumnParallelLinear,
                                                        RowParallelLinear)
 from vllm.sequence import SamplerOutput
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 KVCache = Tuple[torch.Tensor, torch.Tensor]
 
@@ -56,7 +59,8 @@ class GPT2Attention(nn.Module):
         self.num_heads = total_num_heads // tensor_model_parallel_world_size
         self.head_dim = self.hidden_size // total_num_heads
         self.scale = self.head_dim**-0.5
-
+        logger.info(
+            f"hidden_size: {self.hidden_size}, num_heads: {self.num_heads}, head_dim: {self.head_dim}")
         self.c_attn = ColumnParallelLinear(
             self.hidden_size,
             3 * self.hidden_size,
@@ -80,8 +84,11 @@ class GPT2Attention(nn.Module):
         input_metadata: InputMetadata,
         cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
+        # logger.info(f"GPT2Attention forward: {hidden_states.size()}")
         qkv, _ = self.c_attn(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
+        # logger.info(f"q:{q.size()}, k:{k.size()}, v:{v.size()}")
+
         key_cache, value_cache = kv_cache
         attn_output = self.attn(q, k, v, key_cache, value_cache,
                                 input_metadata, cache_event)
@@ -228,6 +235,8 @@ class GPT2LMHeadModel(nn.Module):
                                          input_metadata, cache_events)
         next_tokens = self.sampler(self.lm_head_weight, hidden_states,
                                    input_metadata)
+        logger.info(f"next_tokens: {next_tokens}")
+
         return next_tokens
 
     _column_parallel_weights = ["c_fc.weight", "c_fc.bias"]

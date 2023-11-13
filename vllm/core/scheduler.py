@@ -298,11 +298,16 @@ class Scheduler:
     def free_seq(self, seq: Sequence) -> None:
         self.block_manager.free(seq)
 
-    def free_finished_seq_groups(self) -> None:
+    def free_finished_seq_groups(self) -> List[SequenceGroup]:
+        finished_seq_groups = [
+            seq_group for seq_group in self.running
+            if seq_group.is_finished()
+        ]
         self.running = [
             seq_group for seq_group in self.running
             if not seq_group.is_finished()
         ]
+        return finished_seq_groups
 
     def _allocate(self, seq_group: SequenceGroup) -> None:
         self.block_manager.allocate(seq_group)

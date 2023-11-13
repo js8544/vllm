@@ -6,7 +6,7 @@ import time
 from typing import List, Optional, Tuple
 
 import torch
-from transformers import AutoModelForCausalLM, PreTrainedTokenizerBase
+from transformers import AutoModelForCausalLM, PreTrainedTokenizerBase, AutoModelForSeq2SeqLM
 from tqdm import tqdm
 
 from vllm import LLM, SamplingParams
@@ -44,7 +44,7 @@ def sample_requests(
         if prompt_len < 4 or output_len < 4:
             # Prune too short sequences.
             continue
-        if prompt_len > 1024 or prompt_len + output_len > 2048:
+        if prompt_len > 512 or prompt_len + output_len > 512:
             # Prune too long sequences.
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
@@ -74,6 +74,7 @@ def run_vllm(
         seed=seed,
         trust_remote_code=trust_remote_code,
         dtype=dtype,
+        gpu_memory_utilization=0.73,
     )
 
     # Add the requests to the engine.
@@ -110,7 +111,7 @@ def run_hf(
     trust_remote_code: bool,
 ) -> float:
     assert not use_beam_search
-    llm = AutoModelForCausalLM.from_pretrained(
+    llm = AutoModelForSeq2SeqLM.from_pretrained(
         model, torch_dtype=torch.float16, trust_remote_code=trust_remote_code)
     if llm.config.model_type == "llama":
         # To enable padding in the HF backend.

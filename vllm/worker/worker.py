@@ -11,9 +11,14 @@ from vllm.model_executor import get_model, InputMetadata, set_random_seed
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel)
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata
+from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata, SequenceGroup
 from vllm.worker.cache_engine import CacheEngine
 from vllm.utils import get_gpu_memory, get_max_shared_memory_bytes
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
+KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 
 class Worker:
@@ -37,6 +42,9 @@ class Worker:
         self.scheduler_config = scheduler_config
         self.rank = rank
         self.distributed_init_method = distributed_init_method
+        self.is_encoder_decoder = self.model_config.hf_config.is_encoder_decoder
+        if self.is_encoder_decoder:
+            self.cross_attention_kv_caches: Dict[str, torch.Tensor] = {}
 
         # Uninitialized cache engine. Will be initialized by
         # self.init_cache_engine().
@@ -66,6 +74,8 @@ class Worker:
                                       self.distributed_init_method)
 
         # Initialize the model.
+        logger.info(
+            f"is_encoder_decoder: {self.is_encoder_decoder}")
         set_random_seed(self.model_config.seed)
         self.model = get_model(self.model_config)
 
@@ -106,20 +116,42 @@ class Worker:
         input_tokens, input_positions, input_metadata = self._prepare_inputs(
             seqs)
 
-        # Execute the model.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
-        self.model(
-            input_ids=input_tokens,
-            positions=input_positions,
-            kv_caches=[(None, None)] * num_layers,
-            input_metadata=input_metadata,
-            cache_events=None,
-        )
+        # Execute the model.
+        if self.is_encoder_decoder:
+            cross_attention_kv_caches = self.model.prepare(
+                input_ids=input_tokens,
+                positions=input_positions,
+                input_metadata=input_metadata,
+            )
+            cross_attention_hidden_size = self.model_config.hf_config.hidden_size
+            batch_size, seq_len = input_tokens.shape
+            cross_attention_cache = torch.zeros(
+                [batch_size, seq_len, cross_attention_hidden_size], dtype=cross_attention_kv_caches.dtype, device="cuda")
+
+            self.model(
+                input_ids=input_tokens,
+                positions=input_positions,
+                kv_caches=[(None, None)] * num_layers,
+                cross_attention_kv_caches=[
+                    (cross_attention_cache, cross_attention_cache)]*num_layers,
+                input_metadata=input_metadata,
+                cache_events=None,
+            )
+        else:
+            self.model(
+                input_ids=input_tokens,
+                positions=input_positions,
+                kv_caches=[(None, None)] * num_layers,
+                input_metadata=input_metadata,
+                cache_events=None,
+            )
 
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
         torch.cuda.synchronize()
         peak_memory = torch.cuda.max_memory_allocated()
+        logger.info(f"model memory used: {peak_memory}")
         total_gpu_memory = get_gpu_memory()
         cache_block_size = CacheEngine.get_cache_block_size(
             block_size, self.model_config, self.parallel_config)
@@ -292,6 +324,50 @@ class Worker:
         )
         return tokens_tensor, positions_tensor, input_metadata
 
+    def _prepare_cross_attention_kv_caches(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata]
+    ) -> List[KVCache]:
+        cross_attention_kv_caches: List[torch.Tensor] = []
+        max_cross_attention_kv_cache_len = 0
+
+        for seq_group_metadata in seq_group_metadata_list:
+            cross_attention_kv_cache = self.cross_attention_kv_caches[seq_group_metadata.request_id]
+            assert cross_attention_kv_cache is not None
+            cross_attention_kv_caches.append(cross_attention_kv_cache)
+            max_cross_attention_kv_cache_len = max(
+                max_cross_attention_kv_cache_len, cross_attention_kv_cache.shape[2])
+
+        def pad_cross_attention(kv_cache: torch.Tensor, max_len: int):
+            num_blocks, _, seq_len, inner_dim = kv_cache.shape
+
+            if seq_len == max_len:
+                return kv_cache
+
+            return torch.cat(
+                [kv_cache, torch.zeros((num_blocks, 2, max_len - seq_len, inner_dim), dtype=kv_cache.dtype,
+                                       device="cuda")],
+                dim=2)
+
+        padded_cross_attention_kv_caches = [
+            pad_cross_attention(cross_attention_kv_cache,
+                                max_cross_attention_kv_cache_len)
+            for cross_attention_kv_cache in cross_attention_kv_caches
+        ]
+        # (num_blocks, batch_size, 2, max_len, inner_dim)
+        cross_attention_kv_caches_tensor = torch.stack(
+            padded_cross_attention_kv_caches, dim=0).transpose(0, 1)
+
+        cross_attention_kv_caches: List[KVCache] = []
+        num_blocks = cross_attention_kv_caches_tensor.shape[0]
+        for i in range(num_blocks):
+            key_cache, value_cache = torch.split(
+                cross_attention_kv_caches_tensor[i], 1, dim=1)
+            key_cache = key_cache.squeeze(1)
+            value_cache = value_cache.squeeze(1)
+            cross_attention_kv_caches.append((key_cache, value_cache))
+        return cross_attention_kv_caches
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -328,7 +404,42 @@ class Worker:
         input_tokens, input_positions, input_metadata = self._prepare_inputs(
             seq_group_metadata_list)
 
-        # Execute the model.
+        if self.is_encoder_decoder:
+            first_run = seq_group_metadata_list[0].is_prompt
+
+            if first_run:
+                # First run, need to compute cross attention kv caches
+                cross_attention_kv_caches = self.model.prepare(
+                    input_ids=input_tokens,
+                    positions=input_positions,
+                    input_metadata=input_metadata,
+                )
+                for i, seq_group in enumerate(seq_group_metadata_list):
+                    self.cross_attention_kv_caches[seq_group.request_id] = cross_attention_kv_caches[i]
+                    # Use hfconfig.decoder_start_token_id as the new prompt for decoder
+                    for seq_id in seq_group.seq_data:
+                        seq_group.seq_data[seq_id] = SequenceData([
+                            self.model.config.decoder_start_token_id])
+
+                # Re-prepare decoder input tensors.
+                input_tokens, input_positions, input_metadata = self._prepare_inputs(
+                    seq_group_metadata_list)
+
+            # Retrieve cross-attention kv caches
+            cross_attention_kv_caches = self._prepare_cross_attention_kv_caches(
+                seq_group_metadata_list)
+            output = self.model(
+                input_ids=input_tokens,
+                positions=input_positions,
+                kv_caches=self.gpu_cache,
+                input_metadata=input_metadata,
+                cache_events=cache_events,
+                cross_attention_kv_caches=cross_attention_kv_caches,
+            )
+
+            return output
+
+        # Execute the decoder-only model.
         output = self.model(
             input_ids=input_tokens,
             positions=input_positions,
@@ -337,6 +448,14 @@ class Worker:
             cache_events=cache_events,
         )
         return output
+
+    def free_finished_seq_groups(
+            self,
+            seq_group_list: List[SequenceGroup]
+    ):
+        if self.is_encoder_decoder:
+            for seq_group in seq_group_list:
+                del self.cross_attention_kv_caches[seq_group.request_id]
 
 
 def _init_distributed_environment(

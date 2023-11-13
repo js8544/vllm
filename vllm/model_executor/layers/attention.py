@@ -1,4 +1,5 @@
 """Multi-head attention."""
+from vllm.logger import init_logger
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -17,6 +18,8 @@ from vllm.model_executor.layers.rotary_embedding import (
 _SUPPORTED_HEAD_SIZES = [64, 80, 96, 112, 128, 256]
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
 _PARTITION_SIZE = 512
+
+logger = init_logger(__name__)
 
 
 class PagedAttention(nn.Module):
@@ -238,11 +241,14 @@ class PagedAttention(nn.Module):
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
+        # logger.info(f"k: {key}")
         # Pre-allocate the output tensor.
         output = torch.empty_like(query)
 
         # Compute the attention op for prompts.
         num_prompt_tokens = input_metadata.num_prompt_tokens
+        # logger.info(
+        #     f"num_prompt_tokens: {num_prompt_tokens}, num_generation_tokens: {input_metadata.num_generation_tokens}")
         if num_prompt_tokens > 0:
             # Prompt run.
             assert input_metadata.num_generation_tokens == 0
@@ -271,6 +277,7 @@ class PagedAttention(nn.Module):
                 value_to_cache = value_to_cache[input_metadata.to_cache]
                 slot_mapping = slot_mapping[input_metadata.to_cache]
 
+            # logger.info(f"key_to_cache: {key_to_cache}")
             cache_ops.reshape_and_cache(
                 key_to_cache,
                 value_to_cache,
@@ -278,6 +285,8 @@ class PagedAttention(nn.Module):
                 value_cache,
                 slot_mapping,
             )
+
+        # logger.info(f"key_cache after save: {key_cache}")
 
         if input_metadata.num_generation_tokens > 0:
             # Decoding run.
