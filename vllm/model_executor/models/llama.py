@@ -353,7 +353,7 @@ class LlamaForCausalLM(nn.Module):
             if "rotary_emb.inv_freq" in name:
                 continue
             if ("rotary_emb.cos_cached" in name
-                    or "rotary_emb.sin_cached" in name):
+                    or "rotary_emb.sin_cached" in name or "vision" in name or "mm_projector" in name):
                 # Models trained using ColossalAI may include these tensors in
                 # the checkpoint. Skip them.
                 continue
