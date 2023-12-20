@@ -4,7 +4,7 @@ FROM docker.yard.oa.com:14917/zzihliu/tfccitisbaseimg:cuda12.1-cudnn8-devel-cent
 USER root
 # Set the working directory in the container to /vllm
 WORKDIR /home/qspace/vllm
-
+ADD ./requirements.txt /home/qspace/vllm/requirements.txt
 RUN pip install -r requirements.txt -i https://mirrors.tencent.com/pypi/simple/ --trusted-host mirrors.tencent.com
 RUN pip install tfccitispykit -i https://mirrors.tencent.com/pypi/simple/ --trusted-host mirrors.tencent.com
 RUN pip install transformers_stream_generator einops accelerate flash-attn pillow matplotlib aioprometheus -i https://mirrors.tencent.com/pypi/simple/ --trusted-host mirrors.tencent.com
