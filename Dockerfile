@@ -6,7 +6,7 @@ USER root
 WORKDIR /home/qspace/vllm
 ADD ./requirements.txt /home/qspace/vllm/requirements.txt
 RUN pip install -r requirements.txt -i https://mirrors.tencent.com/pypi/simple/ --trusted-host mirrors.tencent.com
-RUN pip install tfccitispykit -i https://mirrors.tencent.com/pypi/simple/ --trusted-host mirrors.tencent.com
+RUN pip install tfccitispykit==1.3.8 -i https://mirrors.tencent.com/pypi/simple/ --trusted-host mirrors.tencent.com
 RUN pip install transformers_stream_generator einops accelerate flash-attn pillow matplotlib aioprometheus -i https://mirrors.tencent.com/pypi/simple/ --trusted-host mirrors.tencent.com
 
 
