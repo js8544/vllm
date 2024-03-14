@@ -77,7 +77,9 @@ class EncoderAttention(EncDecAttention):
             input_metadata.attn_bias = BlockDiagonalCausalMask.from_seqlens(
                 [seq_len] * batch_size)
 
-        input_metadata.attn_bias = input_metadata.attn_bias[:, :, :, :seq_len]
+        # TODO: Commenting it out for now, T5 specific operation (BlockDiagonalCausalMask
+        # cannot be sliced)
+        #input_metadata.attn_bias = input_metadata.attn_bias[:, :, :, :seq_len]
 
         # Normal attention
         out = xops.memory_efficient_attention_forward(

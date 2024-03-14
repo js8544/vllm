@@ -47,6 +47,8 @@ _MODELS = {
     "StableLmForCausalLM": ("stablelm", "StablelmForCausalLM"),
     "T5ForConditionalGeneration": ("t5", "T5ForConditionalGeneration"),
     "Starcoder2ForCausalLM": ("starcoder2", "Starcoder2ForCausalLM"),
+    "WhisperForConditionalGeneration":
+    ("whisper", "WhisperForConditionalGeneration"),
 }
 
 # Models not supported by ROCm.
