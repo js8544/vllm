@@ -28,12 +28,13 @@ from transformers import FalconConfig as HF_FalconConfig
 
 from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.layers.activation import get_act_fn
-from vllm.model_executor.layers.attention import PagedAttention
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                LinearMethodBase,
                                                QKVParallelLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.rotary_embedding import get_rope
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding, ParallelLMHead)
@@ -150,10 +151,10 @@ class FalconAttention(nn.Module):
                 max_position=max_position_embeddings,
                 base=rope_theta,
             )
-            self.attn = PagedAttention(self.num_heads,
-                                       self.head_dim,
-                                       self.inv_norm_factor,
-                                       num_kv_heads=self.num_kv_heads)
+            self.attn = Attention(self.num_heads,
+                                  self.head_dim,
+                                  self.inv_norm_factor,
+                                  num_kv_heads=self.num_kv_heads)
         elif self.use_alibi:
             tp_rank = get_tensor_model_parallel_rank()
             head_start = tp_rank * self.num_heads
@@ -161,16 +162,16 @@ class FalconAttention(nn.Module):
             alibi_slopes = (_get_alibi_slopes(self.total_num_heads) *
                             self.inv_norm_factor)
             alibi_slopes = alibi_slopes[head_start:head_end].tolist()
-            self.attn = PagedAttention(self.num_heads,
-                                       self.head_dim,
-                                       self.inv_norm_factor,
-                                       num_kv_heads=self.num_kv_heads,
-                                       alibi_slopes=alibi_slopes)
+            self.attn = Attention(self.num_heads,
+                                  self.head_dim,
+                                  self.inv_norm_factor,
+                                  num_kv_heads=self.num_kv_heads,
+                                  alibi_slopes=alibi_slopes)
         else:
-            self.attn = PagedAttention(self.num_heads,
-                                       self.head_dim,
-                                       scale=self.inv_norm_factor,
-                                       num_kv_heads=self.num_kv_heads)
+            self.attn = Attention(self.num_heads,
+                                  self.head_dim,
+                                  scale=self.inv_norm_factor,
+                                  num_kv_heads=self.num_kv_heads)
 
     def forward(
         self,
@@ -373,7 +374,8 @@ class FalconForCausalLM(nn.Module):
             config.vocab_size,
             config.hidden_size,
         )
-        self.sampler = Sampler(config.vocab_size)
+        self.logits_processor = LogitsProcessor(config.vocab_size)
+        self.sampler = Sampler()
 
     def forward(
         self,
@@ -390,13 +392,18 @@ class FalconForCausalLM(nn.Module):
         )
         return hidden_states
 
+    def compute_logits(self, hidden_states: torch.Tensor,
+                       sampling_metadata: SamplingMetadata) -> torch.Tensor:
+        logits = self.logits_processor(self.lm_head.weight, hidden_states,
+                                       sampling_metadata)
+        return logits
+
     def sample(
         self,
-        hidden_states: torch.Tensor,
+        logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head.weight, hidden_states,
-                                   sampling_metadata)
+        next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
 
     def load_weights(self,

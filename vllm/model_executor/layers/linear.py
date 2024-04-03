@@ -72,10 +72,15 @@ class UnquantizedLinearMethod(LinearMethodBase):
                       x: torch.Tensor,
                       bias: Optional[torch.Tensor] = None) -> torch.Tensor:
         weight = weights["weight"]
+        print("*=== self.separate_bias_add:",self.separate_bias_add)
+        print("*=== x.shape:",x.shape)
         if self.separate_bias_add:
-            if bias:
+            if bias is not None:
+                print("*=== Outcome A, x:",x.sum(),"weight:",weight.sum(),"bias:",bias.sum(),"result:",(F.linear(x, weight) + bias).sum())
                 return F.linear(x, weight) + bias
+            print("*=== Outcome B, x:",x.sum(),"weight:",weight.sum(),"bias:",None,"result:",(F.linear(x, weight)).sum())
             return F.linear(x, weight)
+        print("*=== Outcome C, x:",x.sum(),"weight:",weight.sum(),"bias:",bias if bias is None else bias.sum(),"result:",F.linear(x, weight, bias).sum())
         return F.linear(x, weight, bias)
 
 
@@ -214,12 +219,18 @@ class ColumnParallelLinear(torch.nn.Module):
         # Matrix multiply.
         output_parallel = self.linear_method.apply_weights(
             self.linear_weights, input_, bias)
+        print("*-- Input:",input_.sum())
+        print("*-- Intermediate weights:",self.linear_weights["weight"].sum())
+        print("*-- Intermediate bias:",None if bias is None else bias.sum())
+        print("*-- Intermediate output_parallel:",output_parallel.sum())
         if self.gather_output:
             # All-gather across the partitions.
             output = tensor_model_parallel_all_gather(output_parallel)
         else:
             output = output_parallel
         output_bias = self.bias if self.skip_bias_add else None
+        print("*-- output_bias:",None if output_bias is None else output_bias.sum())
+        print("*-- final_output:",output.sum())
         return output, output_bias
 
 
@@ -285,7 +296,8 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                     shard_size = shard_size // param.pack_factor
                     shard_offset = shard_offset // param.pack_factor
 
-                    # If marlin, we need to adjust the offset and size to account for the tiling.
+                    # If marlin, we need to adjust the offset and size to
+                    # account for the tiling.
                     shard_size, shard_offset = adjust_marlin_shard(
                         param, shard_size, shard_offset)
 
@@ -307,7 +319,8 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                 shard_size = shard_size // param.pack_factor
                 shard_offset = shard_offset // param.pack_factor
 
-                # If marlin, we need to adjust the offset and size to account for the tiling.
+                # If marlin, we need to adjust the offset and size to
+                # account for the tiling.
                 shard_size, shard_offset = adjust_marlin_shard(
                     param, shard_size, shard_offset)
 
@@ -413,7 +426,8 @@ class QKVParallelLinear(ColumnParallelLinear):
                     shard_size = shard_size // param.pack_factor
                     shard_offset = shard_offset // param.pack_factor
 
-                    # If marlin, we need to adjust the offset and size to account for the tiling.
+                    # If marlin, we need to adjust the offset and size to
+                    # account for the tiling.
                     shard_size, shard_offset = adjust_marlin_shard(
                         param, shard_size, shard_offset)
 
@@ -442,7 +456,8 @@ class QKVParallelLinear(ColumnParallelLinear):
                 shard_size = shard_size // param.pack_factor
                 shard_offset = shard_offset // param.pack_factor
 
-                # If marlin, we need to adjust the offset and size to account for the tiling.
+                # If marlin, we need to adjust the offset and size to
+                # account for the tiling.
                 shard_size, shard_offset = adjust_marlin_shard(
                     param, shard_size, shard_offset)
 
